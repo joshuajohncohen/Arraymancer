@@ -153,13 +153,12 @@ proc save[T](model: ShakespeareModel[T], dirPath: string) =
   # Save encoder weights (embedding layer)
   model.encoder.weight.value.write_npy(dirPath / "encoder_weight.npy")
   
-  # Save GRU weights (multiple layers)
-  # GRU has weight_ih (input to hidden) and weight_hh (hidden to hidden) for each layer
-  for layer_idx in 0 ..< Layers:
-    model.gru.w3s0[layer_idx].weight_ih.value.write_npy(dirPath / &"gru_layer{layer_idx}_weight_ih.npy")
-    model.gru.w3s0[layer_idx].weight_hh.value.write_npy(dirPath / &"gru_layer{layer_idx}_weight_hh.npy")
-    model.gru.w3s0[layer_idx].bias_ih.value.write_npy(dirPath / &"gru_layer{layer_idx}_bias_ih.npy")
-    model.gru.w3s0[layer_idx].bias_hh.value.write_npy(dirPath / &"gru_layer{layer_idx}_bias_hh.npy")
+  # Save GRU weights
+  model.gru.w3s0.value.write_npy(dirPath / "gru_w3s0.npy")
+  model.gru.w3sN.value.write_npy(dirPath / "gru_w3sN.npy")
+  model.gru.u3s.value.write_npy(dirPath / "gru_u3s.npy")
+  model.gru.bW3s.value.write_npy(dirPath / "gru_bW3s.npy")
+  model.gru.bU3s.value.write_npy(dirPath / "gru_bU3s.npy")
   
   # Save decoder weights (linear layer)
   model.decoder.weight.value.write_npy(dirPath / "decoder_weight.npy")
@@ -178,11 +177,11 @@ proc load[T](ctx: Context[AnyTensor[T]], dirPath: string): ShakespeareModel[T] =
   result.encoder.weight.value = read_npy[T](dirPath / "encoder_weight.npy")
   
   # Load GRU weights
-  for layer_idx in 0 ..< Layers:
-    result.gru.w3s0[layer_idx].weight_ih.value = read_npy[T](dirPath / &"gru_layer{layer_idx}_weight_ih.npy")
-    result.gru.w3s0[layer_idx].weight_hh.value = read_npy[T](dirPath / &"gru_layer{layer_idx}_weight_hh.npy")
-    result.gru.w3s0[layer_idx].bias_ih.value = read_npy[T](dirPath / &"gru_layer{layer_idx}_bias_ih.npy")
-    result.gru.w3s0[layer_idx].bias_hh.value = read_npy[T](dirPath / &"gru_layer{layer_idx}_bias_hh.npy")
+  result.gru.w3s0.value = read_npy[T](dirPath / "gru_w3s0.npy")
+  result.gru.w3sN.value = read_npy[T](dirPath / "gru_w3sN.npy")
+  result.gru.u3s.value = read_npy[T](dirPath / "gru_u3s.npy")
+  result.gru.bW3s.value = read_npy[T](dirPath / "gru_bW3s.npy")
+  result.gru.bU3s.value = read_npy[T](dirPath / "gru_bU3s.npy")
   
   # Load decoder weights
   result.decoder.weight.value = read_npy[T](dirPath / "decoder_weight.npy")

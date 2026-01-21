@@ -66,6 +66,7 @@ const
   EmbedSize = 100
   SeqLen = 200                 # Characters sequences will be split in chunks of 200
   StatusReport = 200           # Report training status every x batches
+  PreviewLength = 100          # Number of characters to preview from input file
 
 # ################################################################
 #
@@ -452,7 +453,7 @@ proc main() =
       quit(1)
     
     echo "Checking the first hundred characters of your file"
-    let previewLen = min(100, txt_raw.len)
+    let previewLen = min(PreviewLength, txt_raw.len)
     echo txt_raw[0 ..< previewLen]
     echo "\n####\nStarting training\n"
 

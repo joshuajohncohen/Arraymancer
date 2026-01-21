@@ -16,6 +16,25 @@
 #   - must learn capital letters
 #   - must learn that character form words
 
+# ========================================
+# Usage Examples
+# ========================================
+#
+# Train a new model:
+#   ./ex06_shakespeare_generator --input examples/ex06_shakespeare_input.txt --mode train --model my_model
+#   or with backward compatibility:
+#   ./ex06_shakespeare_generator examples/ex06_shakespeare_input.txt
+#
+# Generate text from a trained model:
+#   ./ex06_shakespeare_generator --mode generate --model my_model --seed "To be" --gen-len 1000
+#
+# Custom training with fewer epochs:
+#   ./ex06_shakespeare_generator --input examples/ex06_shakespeare_input.txt --mode train --epochs 500
+#
+# See --help for all options:
+#   ./ex06_shakespeare_generator --help
+#
+
 import
   std / [os, random, times, strformat, algorithm, sequtils, tables, parseopt]
 import ../src/arraymancer

@@ -17,3 +17,8 @@ htmldocs/
 *.bck
 * - Copy.*
 * - Copy (?).*
+
+# Model weights for examples
+shakespeare_model/
+*_model/
+*.npy

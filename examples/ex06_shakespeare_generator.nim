@@ -190,6 +190,18 @@ proc load[T](ctx: Context[AnyTensor[T]], dirPath: string): ShakespeareModel[T] =
   if not dirExists(dirPath):
     raise newException(IOError, &"Model directory {dirPath} does not exist")
   
+  # Verify all required weight files exist before initializing model
+  let requiredFiles = @[
+    "encoder_weight.npy",
+    "gru_w3s0.npy", "gru_w3sN.npy", "gru_u3s.npy", "gru_bW3s.npy", "gru_bU3s.npy",
+    "decoder_weight.npy", "decoder_bias.npy"
+  ]
+  for filename in requiredFiles:
+    let filepath = dirPath / filename
+    if not fileExists(filepath):
+      raise newException(IOError, &"Missing weight file: {filepath}")
+  
+  # Initialize model with random weights first
   result = ctx.init(ShakespeareModel)
   
   # Load encoder weights
@@ -439,8 +451,9 @@ proc main() =
       quit(1)
     
     echo "Checking the first hundred characters of your file"
-    let previewLen = min(100, txt_raw.len - 1)
-    echo txt_raw[0 .. previewLen]
+    let previewLen = min(100, txt_raw.len)
+    if previewLen > 0:
+      echo txt_raw[0 ..< previewLen]
     echo "\n####\nStarting training\n"
 
     # For our need in gen_training_set, we reshape it from [nb_chars] to [nb_chars, 1]

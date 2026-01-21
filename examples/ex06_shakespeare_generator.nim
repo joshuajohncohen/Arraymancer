@@ -36,7 +36,7 @@
 #
 
 import
-  std / [os, random, times, strformat, algorithm, sequtils, tables, parseopt]
+  std / [os, random, times, strformat, algorithm, sequtils, tables, parseopt, strutils]
 import ../src/arraymancer
 
 # ################################################################

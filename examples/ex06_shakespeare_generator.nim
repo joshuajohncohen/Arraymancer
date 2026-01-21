@@ -386,9 +386,17 @@ proc parseCommandLine(): tuple[
       of "seed":
         result.seedText = p.val
       of "gen-len":
-        result.genLen = parseInt(p.val)
+        try:
+          result.genLen = parseInt(p.val)
+        except ValueError:
+          echo &"Error: Invalid integer value for --gen-len: {p.val}"
+          quit(1)
       of "epochs":
-        result.numEpochs = parseInt(p.val)
+        try:
+          result.numEpochs = parseInt(p.val)
+        except ValueError:
+          echo &"Error: Invalid integer value for --epochs: {p.val}"
+          quit(1)
       else:
         echo &"Unknown option: {p.key}"
         printHelp()
@@ -425,8 +433,14 @@ proc main() =
       quit(1)
 
     let txt_raw = readFile(args.inputFile)
+    
+    if txt_raw.len == 0:
+      echo "Error: Input file is empty"
+      quit(1)
+    
     echo "Checking the first hundred characters of your file"
-    echo txt_raw[0 .. min(100, txt_raw.len - 1)]
+    let previewLen = min(100, txt_raw.len - 1)
+    echo txt_raw[0 .. previewLen]
     echo "\n####\nStarting training\n"
 
     # For our need in gen_training_set, we reshape it from [nb_chars] to [nb_chars, 1]

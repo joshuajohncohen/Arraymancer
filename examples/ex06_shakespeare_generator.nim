@@ -16,10 +16,8 @@
 #   - must learn capital letters
 #   - must learn that character form words
 
-# TODO: save/reload trained weights
-
 import
-  std / [os, random, times, strformat, algorithm, sequtils, tables]
+  std / [os, random, times, strformat, algorithm, sequtils, tables, parseopt]
 import ../src/arraymancer
 
 # ################################################################
@@ -44,7 +42,7 @@ const
   BatchSize = 100
   Epochs = 2000                # This take a long long time, I'm not even sure it converges
   Layers = 2
-  HiddenSize = 100
+  HiddenSize = 128             # Increased from 100 to 128 for better results
   LearningRate = 0.01'f32
   EmbedSize = 100
   SeqLen = 200                 # Characters sequences will be split in chunks of 200
@@ -140,6 +138,57 @@ network ShakespeareModel:
     let flattened = output.reshape(output.value.shape[1], HiddenSize)
 
     (output: flattened.decoder, hidden: hiddenN)
+
+# ################################################################
+#
+#                     Save/Load Model Weights
+#
+# ################################################################
+
+proc save[T](model: ShakespeareModel[T], dirPath: string) =
+  ## Save model weights to a directory as .npy files
+  if not dirExists(dirPath):
+    createDir(dirPath)
+  
+  # Save encoder weights (embedding layer)
+  model.encoder.weight.value.write_npy(dirPath / "encoder_weight.npy")
+  
+  # Save GRU weights (multiple layers)
+  # GRU has weight_ih (input to hidden) and weight_hh (hidden to hidden) for each layer
+  for layer_idx in 0 ..< Layers:
+    model.gru.w3s0[layer_idx].weight_ih.value.write_npy(dirPath / &"gru_layer{layer_idx}_weight_ih.npy")
+    model.gru.w3s0[layer_idx].weight_hh.value.write_npy(dirPath / &"gru_layer{layer_idx}_weight_hh.npy")
+    model.gru.w3s0[layer_idx].bias_ih.value.write_npy(dirPath / &"gru_layer{layer_idx}_bias_ih.npy")
+    model.gru.w3s0[layer_idx].bias_hh.value.write_npy(dirPath / &"gru_layer{layer_idx}_bias_hh.npy")
+  
+  # Save decoder weights (linear layer)
+  model.decoder.weight.value.write_npy(dirPath / "decoder_weight.npy")
+  model.decoder.bias.value.write_npy(dirPath / "decoder_bias.npy")
+  
+  echo &"Model weights saved to {dirPath}"
+
+proc load[T](ctx: Context[AnyTensor[T]], dirPath: string): ShakespeareModel[T] =
+  ## Load model weights from a directory
+  if not dirExists(dirPath):
+    raise newException(IOError, &"Model directory {dirPath} does not exist")
+  
+  result = ctx.init(ShakespeareModel)
+  
+  # Load encoder weights
+  result.encoder.weight.value = read_npy[T](dirPath / "encoder_weight.npy")
+  
+  # Load GRU weights
+  for layer_idx in 0 ..< Layers:
+    result.gru.w3s0[layer_idx].weight_ih.value = read_npy[T](dirPath / &"gru_layer{layer_idx}_weight_ih.npy")
+    result.gru.w3s0[layer_idx].weight_hh.value = read_npy[T](dirPath / &"gru_layer{layer_idx}_weight_hh.npy")
+    result.gru.w3s0[layer_idx].bias_ih.value = read_npy[T](dirPath / &"gru_layer{layer_idx}_bias_ih.npy")
+    result.gru.w3s0[layer_idx].bias_hh.value = read_npy[T](dirPath / &"gru_layer{layer_idx}_bias_hh.npy")
+  
+  # Load decoder weights
+  result.decoder.weight.value = read_npy[T](dirPath / "decoder_weight.npy")
+  result.decoder.bias.value = read_npy[T](dirPath / "decoder_bias.npy")
+  
+  echo &"Model weights loaded from {dirPath}"
 
 # ################################################################
 #
@@ -260,57 +309,158 @@ proc gen_text[T](
 #
 # ################################################################
 
+proc printHelp() =
+  echo """
+Shakespeare Text Generator
+
+Usage:
+  ex06_shakespeare_generator [options]
+
+Options:
+  -h, --help              Show this help message
+  -i, --input FILE        Input text file for training (required for training mode)
+  -m, --model PATH        Path to model directory for saving/loading weights (default: "shakespeare_model")
+  --mode MODE             Mode: "train" or "generate" (default: "train")
+  --seed TEXT             Seed text for generation (default: "Wh")
+  --gen-len N             Length of generated text (default: 4000)
+  --epochs N              Number of training epochs (default: 2000)
+
+Examples:
+  # Train a new model:
+  ./ex06_shakespeare_generator --input examples/ex06_shakespeare_input.txt --mode train --model my_model
+
+  # Generate text from a trained model:
+  ./ex06_shakespeare_generator --mode generate --model my_model --seed "To be" --gen-len 1000
+"""
+
+proc parseCommandLine(): tuple[
+  mode: string,
+  inputFile: string,
+  modelPath: string,
+  seedText: string,
+  genLen: int,
+  numEpochs: int
+] =
+  ## Parse command-line arguments
+  result.mode = "train"
+  result.inputFile = ""
+  result.modelPath = "shakespeare_model"
+  result.seedText = "Wh"
+  result.genLen = 4000
+  result.numEpochs = Epochs
+
+  var p = initOptParser()
+  while true:
+    p.next()
+    case p.kind
+    of cmdEnd: break
+    of cmdShortOption, cmdLongOption:
+      case p.key
+      of "h", "help":
+        printHelp()
+        quit(0)
+      of "i", "input":
+        result.inputFile = p.val
+      of "m", "model":
+        result.modelPath = p.val
+      of "mode":
+        result.mode = p.val
+      of "seed":
+        result.seedText = p.val
+      of "gen-len":
+        result.genLen = parseInt(p.val)
+      of "epochs":
+        result.numEpochs = parseInt(p.val)
+      else:
+        echo &"Unknown option: {p.key}"
+        printHelp()
+        quit(1)
+    of cmdArgument:
+      # Support positional argument for backward compatibility
+      if result.inputFile == "":
+        result.inputFile = p.key
+
 proc main() =
-  # Parse the input file
-  if paramCount() < 1:
-    echo "Please provide an input file path as an argument"
-    return
+  let args = parseCommandLine()
 
-  let filePath = paramStr(1)
-  if not filePath.fileExists:
-    echo "Could not find input file"
-    return
+  # Validate arguments based on mode
+  if args.mode notin ["train", "generate"]:
+    echo "Error: --mode must be either 'train' or 'generate'"
+    printHelp()
+    quit(1)
 
-  let txt_raw = readFile(filePath)
+  if args.mode == "train" and args.inputFile == "":
+    echo "Error: --input is required for training mode"
+    printHelp()
+    quit(1)
 
-  echo "Checking the first hundred characters of your file"
-  echo txt_raw[0 .. 100]
-  echo "\n####\nStarting training\n"
-
-  # For our need in gen_training_set, we reshape it from [nb_chars] to [nb_chars, 1]
-  let txt = txt_raw.strToTensor.unsqueeze(1)
-
-  # Make the results reproducible
-  randomize(0xDEADBEEF) # Changing that will change the weight initialisation
-
-  # Create our autograd context that will track deep learning operations applied to tensors.
+  # Create our autograd context
   let ctx = newContext Tensor[float32]
 
-  # Build our model and initialize its weights
-  let model = ctx.init(ShakespeareModel)
+  if args.mode == "train":
+    # ============================================================
+    # Training mode
+    # ============================================================
+    
+    if not fileExists(args.inputFile):
+      echo &"Error: Could not find input file: {args.inputFile}"
+      quit(1)
 
-  # Optimizer
-  # let optim = model.optimizer(SGD, learning_rate = LearningRate)
-  var optim = model.optimizer(Adam, learning_rate = LearningRate)
+    let txt_raw = readFile(args.inputFile)
+    echo "Checking the first hundred characters of your file"
+    echo txt_raw[0 .. min(100, txt_raw.len - 1)]
+    echo "\n####\nStarting training\n"
 
-  # We use a different RNG for seq split
-  var split_rng = initRand(42)
+    # For our need in gen_training_set, we reshape it from [nb_chars] to [nb_chars, 1]
+    let txt = txt_raw.strToTensor.unsqueeze(1)
 
-  # Start our time counter
-  let start = epochTime()
+    # Make the results reproducible
+    randomize(0xDEADBEEF)
 
-  for epoch in 0 ..< Epochs:
-    let (input, target) = gen_training_set(txt, SeqLen, BatchSize, split_rng)
-    let loss = ctx.train(model, optim, input, target)
+    # Build our model and initialize its weights
+    let model = ctx.init(ShakespeareModel)
 
-    if epoch mod StatusReport == 0:
-      let elapsed = epochTime() - start
-      echo &"\n####\nTime: {elapsed:>4.4f} s, Epoch: {epoch}/{Epochs}, Loss: {loss:>2.4f}"
-      echo "Sample: "
-      echo ctx.gen_text(model, seq_len = 100)
+    # Optimizer - using Adam for better performance
+    var optim = model.optimizer(Adam, learning_rate = LearningRate)
 
-  echo "\n##########\nTraining end. Generating 4000 characters Shakespeare masterpiece in 3. 2. 1...\n\n"
-  echo ctx.gen_text(model, seq_len = 4000)
+    # We use a different RNG for seq split
+    var split_rng = initRand(42)
+
+    # Start our time counter
+    let start = epochTime()
+
+    for epoch in 0 ..< args.numEpochs:
+      let (input, target) = gen_training_set(txt, SeqLen, BatchSize, split_rng)
+      let loss = ctx.train(model, optim, input, target)
+
+      if epoch mod StatusReport == 0:
+        let elapsed = epochTime() - start
+        echo &"\n####\nTime: {elapsed:>4.4f} s, Epoch: {epoch}/{args.numEpochs}, Loss: {loss:>2.4f}"
+        echo "Sample: "
+        echo ctx.gen_text(model, seq_len = 100)
+
+    echo "\n##########\nTraining complete!\n"
+    echo &"Saving model to {args.modelPath}..."
+    model.save(args.modelPath)
+    
+    echo "\nGenerating 4000 characters Shakespeare masterpiece in 3. 2. 1...\n"
+    echo ctx.gen_text(model, seq_len = 4000)
+
+  else:
+    # ============================================================
+    # Generation mode
+    # ============================================================
+    
+    if not dirExists(args.modelPath):
+      echo &"Error: Model directory {args.modelPath} does not exist"
+      echo "Please train a model first using --mode train"
+      quit(1)
+
+    echo &"Loading model from {args.modelPath}..."
+    let model = ctx.load(args.modelPath)
+
+    echo &"\nGenerating {args.genLen} characters with seed: \"{args.seedText}\"\n"
+    echo ctx.gen_text(model, seed_chars = args.seedText, seq_len = args.genLen)
 
 main()
 

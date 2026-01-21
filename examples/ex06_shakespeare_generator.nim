@@ -164,24 +164,30 @@ network ShakespeareModel:
 #
 # ################################################################
 
+const ModelWeightFiles = [
+  "encoder_weight.npy",
+  "gru_w3s0.npy", "gru_w3sN.npy", "gru_u3s.npy", "gru_bW3s.npy", "gru_bU3s.npy",
+  "decoder_weight.npy", "decoder_bias.npy"
+]
+
 proc save[T](model: ShakespeareModel[T], dirPath: string) =
   ## Save model weights to a directory as .npy files
   if not dirExists(dirPath):
     createDir(dirPath)
   
   # Save encoder weights (embedding layer)
-  model.encoder.weight.value.write_npy(dirPath / "encoder_weight.npy")
+  model.encoder.weight.value.write_npy(dirPath / ModelWeightFiles[0])
   
   # Save GRU weights
-  model.gru.w3s0.value.write_npy(dirPath / "gru_w3s0.npy")
-  model.gru.w3sN.value.write_npy(dirPath / "gru_w3sN.npy")
-  model.gru.u3s.value.write_npy(dirPath / "gru_u3s.npy")
-  model.gru.bW3s.value.write_npy(dirPath / "gru_bW3s.npy")
-  model.gru.bU3s.value.write_npy(dirPath / "gru_bU3s.npy")
+  model.gru.w3s0.value.write_npy(dirPath / ModelWeightFiles[1])
+  model.gru.w3sN.value.write_npy(dirPath / ModelWeightFiles[2])
+  model.gru.u3s.value.write_npy(dirPath / ModelWeightFiles[3])
+  model.gru.bW3s.value.write_npy(dirPath / ModelWeightFiles[4])
+  model.gru.bU3s.value.write_npy(dirPath / ModelWeightFiles[5])
   
   # Save decoder weights (linear layer)
-  model.decoder.weight.value.write_npy(dirPath / "decoder_weight.npy")
-  model.decoder.bias.value.write_npy(dirPath / "decoder_bias.npy")
+  model.decoder.weight.value.write_npy(dirPath / ModelWeightFiles[6])
+  model.decoder.bias.value.write_npy(dirPath / ModelWeightFiles[7])
   
   echo &"Model weights saved to {dirPath}"
 
@@ -191,12 +197,7 @@ proc load[T](ctx: Context[AnyTensor[T]], dirPath: string): ShakespeareModel[T] =
     raise newException(IOError, &"Model directory {dirPath} does not exist")
   
   # Verify all required weight files exist before initializing model
-  let requiredFiles = @[
-    "encoder_weight.npy",
-    "gru_w3s0.npy", "gru_w3sN.npy", "gru_u3s.npy", "gru_bW3s.npy", "gru_bU3s.npy",
-    "decoder_weight.npy", "decoder_bias.npy"
-  ]
-  for filename in requiredFiles:
+  for filename in ModelWeightFiles:
     let filepath = dirPath / filename
     if not fileExists(filepath):
       raise newException(IOError, &"Missing weight file: {filepath}")
@@ -205,18 +206,18 @@ proc load[T](ctx: Context[AnyTensor[T]], dirPath: string): ShakespeareModel[T] =
   result = ctx.init(ShakespeareModel)
   
   # Load encoder weights
-  result.encoder.weight.value = read_npy[T](dirPath / "encoder_weight.npy")
+  result.encoder.weight.value = read_npy[T](dirPath / ModelWeightFiles[0])
   
   # Load GRU weights
-  result.gru.w3s0.value = read_npy[T](dirPath / "gru_w3s0.npy")
-  result.gru.w3sN.value = read_npy[T](dirPath / "gru_w3sN.npy")
-  result.gru.u3s.value = read_npy[T](dirPath / "gru_u3s.npy")
-  result.gru.bW3s.value = read_npy[T](dirPath / "gru_bW3s.npy")
-  result.gru.bU3s.value = read_npy[T](dirPath / "gru_bU3s.npy")
+  result.gru.w3s0.value = read_npy[T](dirPath / ModelWeightFiles[1])
+  result.gru.w3sN.value = read_npy[T](dirPath / ModelWeightFiles[2])
+  result.gru.u3s.value = read_npy[T](dirPath / ModelWeightFiles[3])
+  result.gru.bW3s.value = read_npy[T](dirPath / ModelWeightFiles[4])
+  result.gru.bU3s.value = read_npy[T](dirPath / ModelWeightFiles[5])
   
   # Load decoder weights
-  result.decoder.weight.value = read_npy[T](dirPath / "decoder_weight.npy")
-  result.decoder.bias.value = read_npy[T](dirPath / "decoder_bias.npy")
+  result.decoder.weight.value = read_npy[T](dirPath / ModelWeightFiles[6])
+  result.decoder.bias.value = read_npy[T](dirPath / ModelWeightFiles[7])
   
   echo &"Model weights loaded from {dirPath}"
 
@@ -452,8 +453,7 @@ proc main() =
     
     echo "Checking the first hundred characters of your file"
     let previewLen = min(100, txt_raw.len)
-    if previewLen > 0:
-      echo txt_raw[0 ..< previewLen]
+    echo txt_raw[0 ..< previewLen]
     echo "\n####\nStarting training\n"
 
     # For our need in gen_training_set, we reshape it from [nb_chars] to [nb_chars, 1]

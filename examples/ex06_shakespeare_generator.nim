@@ -52,6 +52,12 @@
 # Train with custom parameters:
 #   ./ex06_shakespeare_generator --input=data.txt --batch-size=64 --learning-rate=0.001 --seq-len=150
 #
+# Train with checkpoints every 100 epochs:
+#   ./ex06_shakespeare_generator --input=data.txt --checkpoint-freq=100
+#
+# Resume training from checkpoint (e.g., trained 300 epochs, continue to 500):
+#   ./ex06_shakespeare_generator --input=data.txt --resume --epochs=500
+#
 # Get more frequent progress reports (every 50 epochs instead of 200):
 #   ./ex06_shakespeare_generator --input=data.txt --status-report=50
 #
@@ -221,8 +227,9 @@ const ModelWeightFiles = [
   "decoder_weight.npy", "decoder_bias.npy"
 ]
 
-proc save[T](model: ShakespeareModel[T], dirPath: string) =
+proc save[T](model: ShakespeareModel[T], dirPath: string, epoch: int = -1) =
   ## Save model weights to a directory as .npy files
+  ## Optionally save the current epoch number for resuming training
   if not dirExists(dirPath):
     createDir(dirPath)
   
@@ -240,10 +247,18 @@ proc save[T](model: ShakespeareModel[T], dirPath: string) =
   model.decoder.weight.value.write_npy(dirPath / ModelWeightFiles[6])
   model.decoder.bias.value.write_npy(dirPath / ModelWeightFiles[7])
   
+  # Save epoch number if provided (for resuming training)
+  if epoch >= 0:
+    let epochFile = dirPath / "checkpoint_epoch.txt"
+    writeFile(epochFile, $epoch)
+  
   echo &"Model weights saved to {dirPath}"
+  if epoch >= 0:
+    echo &"  Checkpoint at epoch {epoch}"
 
-proc load[T](ctx: Context[AnyTensor[T]], dirPath: string): ShakespeareModel[T] =
+proc load[T](ctx: Context[AnyTensor[T]], dirPath: string): tuple[model: ShakespeareModel[T], startEpoch: int] =
   ## Load model weights from a directory
+  ## Returns the model and the epoch to resume from (0 if no checkpoint)
   if not dirExists(dirPath):
     raise newException(IOError, &"Model directory {dirPath} does not exist")
   
@@ -254,23 +269,33 @@ proc load[T](ctx: Context[AnyTensor[T]], dirPath: string): ShakespeareModel[T] =
       raise newException(IOError, &"Missing weight file: {filepath}")
   
   # Initialize model with random weights first
-  result = ctx.init(ShakespeareModel)
+  result.model = ctx.init(ShakespeareModel)
   
   # Load encoder weights
-  result.encoder.weight.value = read_npy[T](dirPath / ModelWeightFiles[0])
+  result.model.encoder.weight.value = read_npy[T](dirPath / ModelWeightFiles[0])
   
   # Load GRU weights
-  result.gru.w3s0.value = read_npy[T](dirPath / ModelWeightFiles[1])
-  result.gru.w3sN.value = read_npy[T](dirPath / ModelWeightFiles[2])
-  result.gru.u3s.value = read_npy[T](dirPath / ModelWeightFiles[3])
-  result.gru.bW3s.value = read_npy[T](dirPath / ModelWeightFiles[4])
-  result.gru.bU3s.value = read_npy[T](dirPath / ModelWeightFiles[5])
+  result.model.gru.w3s0.value = read_npy[T](dirPath / ModelWeightFiles[1])
+  result.model.gru.w3sN.value = read_npy[T](dirPath / ModelWeightFiles[2])
+  result.model.gru.u3s.value = read_npy[T](dirPath / ModelWeightFiles[3])
+  result.model.gru.bW3s.value = read_npy[T](dirPath / ModelWeightFiles[4])
+  result.model.gru.bU3s.value = read_npy[T](dirPath / ModelWeightFiles[5])
   
   # Load decoder weights
-  result.decoder.weight.value = read_npy[T](dirPath / ModelWeightFiles[6])
-  result.decoder.bias.value = read_npy[T](dirPath / ModelWeightFiles[7])
+  result.model.decoder.weight.value = read_npy[T](dirPath / ModelWeightFiles[6])
+  result.model.decoder.bias.value = read_npy[T](dirPath / ModelWeightFiles[7])
   
-  echo &"Model weights loaded from {dirPath}"
+  # Load epoch number if it exists (for resuming training)
+  result.startEpoch = 0
+  let epochFile = dirPath / "checkpoint_epoch.txt"
+  if fileExists(epochFile):
+    try:
+      result.startEpoch = parseInt(readFile(epochFile).strip())
+      echo &"Model weights loaded from {dirPath} (checkpoint at epoch {result.startEpoch})"
+    except ValueError:
+      echo &"Model weights loaded from {dirPath} (warning: could not parse checkpoint epoch)"
+  else:
+    echo &"Model weights loaded from {dirPath}"
 
 # ################################################################
 #
@@ -412,6 +437,8 @@ Options:
   --hidden-size=N              Hidden layer size (default: 128)
   --seq-len=N                  Sequence length for training (default: 200)
   --status-report=N            Report training status every N epochs (default: 200)
+  --checkpoint-freq=N          Save model checkpoint every N epochs (default: 0, disabled)
+  --resume                     Resume training from saved checkpoint
   --min-line-len=N             Minimum line length to keep in training data (default: 0, disabled)
 
 Examples:
@@ -420,6 +447,12 @@ Examples:
 
   # Train with custom parameters:
   ./ex06_shakespeare_generator --input=data.txt --batch-size=64 --learning-rate=0.001 --hidden-size=256
+
+  # Train with checkpoints every 100 epochs:
+  ./ex06_shakespeare_generator --input=data.txt --checkpoint-freq=100
+
+  # Resume training from checkpoint:
+  ./ex06_shakespeare_generator --input=data.txt --resume --epochs=500
 
   # Get more frequent progress reports:
   ./ex06_shakespeare_generator --input=data.txt --status-report=50
@@ -443,6 +476,8 @@ proc parseCommandLine(): tuple[
   hiddenSize: int,
   seqLen: int,
   statusReport: int,
+  checkpointFreq: int,
+  resume: bool,
   minLineLen: int
 ] =
   ## Parse command-line arguments
@@ -457,6 +492,8 @@ proc parseCommandLine(): tuple[
   result.hiddenSize = HiddenSize
   result.seqLen = SeqLen
   result.statusReport = StatusReport
+  result.checkpointFreq = 0  # Disabled by default
+  result.resume = false
   result.minLineLen = 0  # Disabled by default
 
   var p = initOptParser()
@@ -534,6 +571,17 @@ proc parseCommandLine(): tuple[
         except ValueError:
           echo &"Error: Invalid integer value for --status-report: {p.val}"
           quit(1)
+      of "checkpoint-freq":
+        try:
+          result.checkpointFreq = parseInt(p.val)
+          if result.checkpointFreq < 0:
+            echo "Error: --checkpoint-freq must be non-negative"
+            quit(1)
+        except ValueError:
+          echo &"Error: Invalid integer value for --checkpoint-freq: {p.val}"
+          quit(1)
+      of "resume":
+        result.resume = true
       of "min-line-len":
         try:
           result.minLineLen = parseInt(p.val)
@@ -614,6 +662,10 @@ proc main() =
     echo &"  Learning rate: {args.learningRate}"
     echo &"  Hidden size: {HiddenSize} (compile-time constant)"
     echo &"  Status report interval: {args.statusReport} epochs"
+    if args.checkpointFreq > 0:
+      echo &"  Checkpoint frequency: {args.checkpointFreq} epochs"
+    if args.resume:
+      echo &"  Resume from checkpoint: enabled"
     echo ""
 
     # For our need in gen_training_set, we reshape it from [nb_chars] to [nb_chars, 1]
@@ -623,7 +675,24 @@ proc main() =
     randomize(0xDEADBEEF)
 
     # Build our model and initialize its weights
-    let model = ctx.init(ShakespeareModel)
+    var model: ShakespeareModel[float32]
+    var startEpoch = 0
+    
+    # Check if resuming from checkpoint
+    if args.resume and dirExists(args.modelPath):
+      echo &"Resuming training from {args.modelPath}..."
+      let loaded = ctx.load(args.modelPath)
+      model = loaded.model
+      startEpoch = loaded.startEpoch
+      if startEpoch >= args.numEpochs:
+        echo &"Model already trained for {startEpoch} epochs (target: {args.numEpochs})"
+        echo "Increase --epochs to train further or remove --resume to restart."
+        quit(0)
+      echo &"Continuing from epoch {startEpoch} to {args.numEpochs}"
+    else:
+      model = ctx.init(ShakespeareModel)
+      if args.resume:
+        echo "Warning: --resume specified but no checkpoint found, starting from scratch"
 
     # Optimizer - using Adam for better performance
     var optim = model.optimizer(Adam, learning_rate = args.learningRate)
@@ -634,7 +703,7 @@ proc main() =
     # Start our time counter
     let start = epochTime()
 
-    for epoch in 0 ..< args.numEpochs:
+    for epoch in startEpoch ..< args.numEpochs:
       let (input, target) = gen_training_set(txt, args.seqLen, args.batchSize, split_rng)
       let loss = ctx.train(model, optim, input, target)
 
@@ -643,10 +712,15 @@ proc main() =
         echo &"\n####\nTime: {elapsed:>4.4f} s, Epoch: {epoch}/{args.numEpochs}, Loss: {loss:>2.4f}"
         echo "Sample: "
         echo ctx.gen_text(model, seq_len = 100)
+      
+      # Save checkpoint if enabled
+      if args.checkpointFreq > 0 and (epoch + 1) mod args.checkpointFreq == 0:
+        echo &"\nSaving checkpoint at epoch {epoch + 1}..."
+        model.save(args.modelPath, epoch + 1)
 
     echo "\n##########\nTraining complete!\n"
     echo &"Saving model to {args.modelPath}..."
-    model.save(args.modelPath)
+    model.save(args.modelPath, args.numEpochs)
     
     echo "\nGenerating 4000 characters Shakespeare masterpiece in 3. 2. 1...\n"
     echo ctx.gen_text(model, seq_len = 4000)
@@ -662,7 +736,8 @@ proc main() =
       quit(1)
 
     echo &"Loading model from {args.modelPath}..."
-    let model = ctx.load(args.modelPath)
+    let loaded = ctx.load(args.modelPath)
+    let model = loaded.model
 
     echo &"\nGenerating {args.genLen} characters with seed: \"{args.seedText}\"\n"
     echo ctx.gen_text(model, seed_chars = args.seedText, seq_len = args.genLen)

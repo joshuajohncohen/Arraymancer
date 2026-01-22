@@ -45,15 +45,21 @@
 # ========================================
 #
 # Train a new model:
-#   ./ex06_shakespeare_generator --input examples/ex06_shakespeare_input.txt --mode train --model my_model
+#   ./ex06_shakespeare_generator --input=examples/ex06_shakespeare_input.txt --mode=train --model=my_model
 #   or with backward compatibility:
 #   ./ex06_shakespeare_generator examples/ex06_shakespeare_input.txt
 #
+# Train with custom parameters:
+#   ./ex06_shakespeare_generator --input=data.txt --batch-size=64 --learning-rate=0.001 --seq-len=150
+#
+# Filter short lines during training:
+#   ./ex06_shakespeare_generator --input=data.txt --min-line-len=15
+#
 # Generate text from a trained model:
-#   ./ex06_shakespeare_generator --mode generate --model my_model --seed "To be" --gen-len 1000
+#   ./ex06_shakespeare_generator --mode=generate --model=my_model --seed="To be" --gen-len=1000
 #
 # Custom training with fewer epochs:
-#   ./ex06_shakespeare_generator --input examples/ex06_shakespeare_input.txt --mode train --epochs 500
+#   ./ex06_shakespeare_generator --input=examples/ex06_shakespeare_input.txt --mode=train --epochs=500
 #
 # See --help for all options:
 #   ./ex06_shakespeare_generator --help
@@ -97,6 +103,23 @@ const
 #                           Helpers
 #
 # ################################################################
+
+proc filterShortLines(text: string, minLen: int): string =
+  ## Filter out lines shorter than minLen characters
+  ## If minLen is 0, returns text unchanged
+  if minLen <= 0:
+    return text
+  
+  var filteredLines: seq[string] = @[]
+  for line in text.splitLines():
+    if line.len >= minLen:
+      filteredLines.add(line)
+  
+  result = filteredLines.join("\n")
+  
+  # Add back final newline if original had it
+  if text.len > 0 and text[^1] == '\n':
+    result &= "\n"
 
 proc strToTensor(str: string): Tensor[PrintableIdx] =
   result = newTensor[PrintableIdx](str.len)
@@ -373,20 +396,31 @@ Usage:
   ex06_shakespeare_generator [options]
 
 Options:
-  -h, --help              Show this help message
-  -i, --input FILE        Input text file for training (required for training mode)
-  -m, --model PATH        Path to model directory for saving/loading weights (default: "shakespeare_model")
-  --mode MODE             Mode: "train" or "generate" (default: "train")
-  --seed TEXT             Seed text for generation (default: "Wh")
-  --gen-len N             Length of generated text (default: 4000)
-  --epochs N              Number of training epochs (default: 2000)
+  -h, --help                   Show this help message
+  -i, --input=FILE             Input text file for training (required for training mode)
+  -m, --model=PATH             Path to model directory for saving/loading weights (default: "shakespeare_model")
+  --mode=MODE                  Mode: "train" or "generate" (default: "train")
+  --seed=TEXT                  Seed text for generation (default: "Wh")
+  --gen-len=N                  Length of generated text (default: 4000)
+  --epochs=N                   Number of training epochs (default: 2000)
+  --batch-size=N               Batch size for training (default: 100)
+  --learning-rate=FLOAT        Learning rate for optimizer (default: 0.01)
+  --hidden-size=N              Hidden layer size (default: 128)
+  --seq-len=N                  Sequence length for training (default: 200)
+  --min-line-len=N             Minimum line length to keep in training data (default: 0, disabled)
 
 Examples:
   # Train a new model:
-  ./ex06_shakespeare_generator --input examples/ex06_shakespeare_input.txt --mode train --model my_model
+  ./ex06_shakespeare_generator --input=examples/ex06_shakespeare_input.txt --mode=train --model=my_model
+
+  # Train with custom parameters:
+  ./ex06_shakespeare_generator --input=data.txt --batch-size=64 --learning-rate=0.001 --hidden-size=256
+
+  # Filter short lines during training:
+  ./ex06_shakespeare_generator --input=data.txt --min-line-len=15
 
   # Generate text from a trained model:
-  ./ex06_shakespeare_generator --mode generate --model my_model --seed "To be" --gen-len 1000
+  ./ex06_shakespeare_generator --mode=generate --model=my_model --seed="To be" --gen-len=1000
 """
 
 proc parseCommandLine(): tuple[
@@ -395,7 +429,12 @@ proc parseCommandLine(): tuple[
   modelPath: string,
   seedText: string,
   genLen: int,
-  numEpochs: int
+  numEpochs: int,
+  batchSize: int,
+  learningRate: float32,
+  hiddenSize: int,
+  seqLen: int,
+  minLineLen: int
 ] =
   ## Parse command-line arguments
   result.mode = "train"
@@ -404,6 +443,11 @@ proc parseCommandLine(): tuple[
   result.seedText = "Wh"
   result.genLen = 4000
   result.numEpochs = Epochs
+  result.batchSize = BatchSize
+  result.learningRate = LearningRate
+  result.hiddenSize = HiddenSize
+  result.seqLen = SeqLen
+  result.minLineLen = 0  # Disabled by default
 
   var p = initOptParser()
   while true:
@@ -434,6 +478,51 @@ proc parseCommandLine(): tuple[
           result.numEpochs = parseInt(p.val)
         except ValueError:
           echo &"Error: Invalid integer value for --epochs: {p.val}"
+          quit(1)
+      of "batch-size":
+        try:
+          result.batchSize = parseInt(p.val)
+          if result.batchSize < 1:
+            echo "Error: --batch-size must be at least 1"
+            quit(1)
+        except ValueError:
+          echo &"Error: Invalid integer value for --batch-size: {p.val}"
+          quit(1)
+      of "learning-rate":
+        try:
+          result.learningRate = parseFloat(p.val).float32
+          if result.learningRate <= 0:
+            echo "Error: --learning-rate must be positive"
+            quit(1)
+        except ValueError:
+          echo &"Error: Invalid float value for --learning-rate: {p.val}"
+          quit(1)
+      of "hidden-size":
+        try:
+          result.hiddenSize = parseInt(p.val)
+          if result.hiddenSize < 1:
+            echo "Error: --hidden-size must be at least 1"
+            quit(1)
+        except ValueError:
+          echo &"Error: Invalid integer value for --hidden-size: {p.val}"
+          quit(1)
+      of "seq-len":
+        try:
+          result.seqLen = parseInt(p.val)
+          if result.seqLen < 1:
+            echo "Error: --seq-len must be at least 1"
+            quit(1)
+        except ValueError:
+          echo &"Error: Invalid integer value for --seq-len: {p.val}"
+          quit(1)
+      of "min-line-len":
+        try:
+          result.minLineLen = parseInt(p.val)
+          if result.minLineLen < 0:
+            echo "Error: --min-line-len must be non-negative"
+            quit(1)
+        except ValueError:
+          echo &"Error: Invalid integer value for --min-line-len: {p.val}"
           quit(1)
       else:
         echo &"Unknown option: {p.key}"
@@ -470,16 +559,42 @@ proc main() =
       echo &"Error: Could not find input file: {args.inputFile}"
       quit(1)
 
-    let txt_raw = readFile(args.inputFile)
+    var txt_raw = readFile(args.inputFile)
     
     if txt_raw.len == 0:
       echo "Error: Input file is empty"
       quit(1)
     
+    # Filter short lines if requested
+    if args.minLineLen > 0:
+      echo &"Filtering lines shorter than {args.minLineLen} characters..."
+      let originalLen = txt_raw.len
+      txt_raw = filterShortLines(txt_raw, args.minLineLen)
+      let filteredLen = txt_raw.len
+      let removedChars = originalLen - filteredLen
+      let percentRemoved = (removedChars.float / originalLen.float * 100.0)
+      echo &"Removed {removedChars} characters ({percentRemoved:0.1f}% of data)"
+      
+      if txt_raw.len == 0:
+        echo "Error: No data remaining after filtering. Try a lower --min-line-len value."
+        quit(1)
+    
     echo "Checking the first hundred characters of your file"
     let previewLen = min(PreviewLength, txt_raw.len)
     echo txt_raw[0 ..< previewLen]
-    echo "\n####\nStarting training\n"
+    
+    # Check if custom parameters differ from defaults
+    if args.hiddenSize != HiddenSize:
+      echo &"\nWarning: --hidden-size={args.hiddenSize} specified, but model uses compile-time constant HiddenSize={HiddenSize}"
+      echo "To change hidden size, modify the HiddenSize constant in the source and recompile."
+    
+    echo &"\n####\nStarting training with parameters:"
+    echo &"  Epochs: {args.numEpochs}"
+    echo &"  Batch size: {args.batchSize}"
+    echo &"  Sequence length: {args.seqLen}"
+    echo &"  Learning rate: {args.learningRate}"
+    echo &"  Hidden size: {HiddenSize} (compile-time constant)"
+    echo ""
 
     # For our need in gen_training_set, we reshape it from [nb_chars] to [nb_chars, 1]
     let txt = txt_raw.strToTensor.unsqueeze(1)
@@ -491,7 +606,7 @@ proc main() =
     let model = ctx.init(ShakespeareModel)
 
     # Optimizer - using Adam for better performance
-    var optim = model.optimizer(Adam, learning_rate = LearningRate)
+    var optim = model.optimizer(Adam, learning_rate = args.learningRate)
 
     # We use a different RNG for seq split
     var split_rng = initRand(42)
@@ -500,7 +615,7 @@ proc main() =
     let start = epochTime()
 
     for epoch in 0 ..< args.numEpochs:
-      let (input, target) = gen_training_set(txt, SeqLen, BatchSize, split_rng)
+      let (input, target) = gen_training_set(txt, args.seqLen, args.batchSize, split_rng)
       let loss = ctx.train(model, optim, input, target)
 
       if epoch mod StatusReport == 0:

@@ -52,6 +52,9 @@
 # Train with custom parameters:
 #   ./ex06_shakespeare_generator --input=data.txt --batch-size=64 --learning-rate=0.001 --seq-len=150
 #
+# Get more frequent progress reports (every 50 epochs instead of 200):
+#   ./ex06_shakespeare_generator --input=data.txt --status-report=50
+#
 # Filter short lines during training:
 #   ./ex06_shakespeare_generator --input=data.txt --min-line-len=15
 #
@@ -407,6 +410,7 @@ Options:
   --learning-rate=FLOAT        Learning rate for optimizer (default: 0.01)
   --hidden-size=N              Hidden layer size (default: 128)
   --seq-len=N                  Sequence length for training (default: 200)
+  --status-report=N            Report training status every N epochs (default: 200)
   --min-line-len=N             Minimum line length to keep in training data (default: 0, disabled)
 
 Examples:
@@ -415,6 +419,9 @@ Examples:
 
   # Train with custom parameters:
   ./ex06_shakespeare_generator --input=data.txt --batch-size=64 --learning-rate=0.001 --hidden-size=256
+
+  # Get more frequent progress reports:
+  ./ex06_shakespeare_generator --input=data.txt --status-report=50
 
   # Filter short lines during training:
   ./ex06_shakespeare_generator --input=data.txt --min-line-len=15
@@ -434,6 +441,7 @@ proc parseCommandLine(): tuple[
   learningRate: float32,
   hiddenSize: int,
   seqLen: int,
+  statusReport: int,
   minLineLen: int
 ] =
   ## Parse command-line arguments
@@ -447,6 +455,7 @@ proc parseCommandLine(): tuple[
   result.learningRate = LearningRate
   result.hiddenSize = HiddenSize
   result.seqLen = SeqLen
+  result.statusReport = StatusReport
   result.minLineLen = 0  # Disabled by default
 
   var p = initOptParser()
@@ -514,6 +523,15 @@ proc parseCommandLine(): tuple[
             quit(1)
         except ValueError:
           echo &"Error: Invalid integer value for --seq-len: {p.val}"
+          quit(1)
+      of "status-report":
+        try:
+          result.statusReport = parseInt(p.val)
+          if result.statusReport < 1:
+            echo "Error: --status-report must be at least 1"
+            quit(1)
+        except ValueError:
+          echo &"Error: Invalid integer value for --status-report: {p.val}"
           quit(1)
       of "min-line-len":
         try:
@@ -594,6 +612,7 @@ proc main() =
     echo &"  Sequence length: {args.seqLen}"
     echo &"  Learning rate: {args.learningRate}"
     echo &"  Hidden size: {HiddenSize} (compile-time constant)"
+    echo &"  Status report interval: {args.statusReport} epochs"
     echo ""
 
     # For our need in gen_training_set, we reshape it from [nb_chars] to [nb_chars, 1]
@@ -618,7 +637,7 @@ proc main() =
       let (input, target) = gen_training_set(txt, args.seqLen, args.batchSize, split_rng)
       let loss = ctx.train(model, optim, input, target)
 
-      if epoch mod StatusReport == 0:
+      if epoch mod args.statusReport == 0:
         let elapsed = epochTime() - start
         echo &"\n####\nTime: {elapsed:>4.4f} s, Epoch: {epoch}/{args.numEpochs}, Loss: {loss:>2.4f}"
         echo "Sample: "

@@ -571,7 +571,7 @@ proc parseCommandLine(): tuple[
         except ValueError:
           echo &"Error: Invalid integer value for --status-report: {p.val}"
           quit(1)
-      of "checkpoint-freq":
+      of "checkpoint-freq", "checkpointFreq", "checkpoint_freq":
         try:
           result.checkpointFreq = parseInt(p.val)
           if result.checkpointFreq < 0:

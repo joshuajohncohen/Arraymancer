@@ -309,7 +309,8 @@ proc train[T](
   ## Return the loss after the training session
 
   let seq_len = input.shape[0]
-  var hidden = ctx.variable zeros[float32](Layers, BatchSize, HiddenSize)
+  let batch_size = input.shape[1]  # Get actual batch size from input
+  var hidden = ctx.variable zeros[float32](Layers, batch_size, HiddenSize)
 
   # We will cumulate the loss on the whole seq before backpropping at once.
   var seq_loss = ctx.variable(zeros[float32](1), requires_grad = true)

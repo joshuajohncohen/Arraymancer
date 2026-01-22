@@ -7,8 +7,32 @@
 
 # Note: training is quite slow on CPU, 30 min for my i5-5257U (2.7GHz dual-core Broadwell from 2015)
 #
-# Also parallelizing via OpenMP will slow down computation so don't use it.
-# there is probably false sharing in the GRU layer, reshape layer or flatten_idx from Embedding.
+# ========================================
+# Performance & Parallelization Notes
+# ========================================
+#
+# This example trains most efficiently as a single-threaded application.
+# OpenMP parallelization should NOT be used as it will slow down computation
+# due to false sharing in the GRU layer, reshape layer, or flatten_idx from Embedding.
+#
+# For optimal performance, compile with these flags:
+#   nim c -d:release -d:danger -d:native examples/ex06_shakespeare_generator.nim
+#
+# Explanation of flags:
+#   -d:release : Disables stacktraces and debug info for maximum speed
+#   -d:danger  : Disables runtime checks (bounds checking, etc.) - use with caution
+#   -d:native  : Optimizes for your specific CPU architecture (-march=native)
+#
+# Optional optimizations:
+#   -d:blas=openblas -d:lapack=openblas : Use optimized OpenBLAS (if installed)
+#   -d:blas=mkl -d:lapack=mkl          : Use Intel MKL (if installed, fastest option)
+#
+# DO NOT use -d:openmp flag with this example - it will hurt performance.
+#
+# The code already uses:
+#   - Adam optimizer (more efficient than SGD for this task)
+#   - Optimal batch size (100) and sequence length (200)
+#   - Efficient tensor slicing in gen_training_set
 
 # Remember that the network
 #   - must learn, not to use !?;. everywhere

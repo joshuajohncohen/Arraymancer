@@ -7,8 +7,32 @@
 
 # Note: training is quite slow on CPU, 30 min for my i5-5257U (2.7GHz dual-core Broadwell from 2015)
 #
-# Also parallelizing via OpenMP will slow down computation so don't use it.
-# there is probably false sharing in the GRU layer, reshape layer or flatten_idx from Embedding.
+# ========================================
+# Performance & Parallelization Notes
+# ========================================
+#
+# This example trains most efficiently as a single-threaded application.
+# OpenMP parallelization should NOT be used as it will slow down computation
+# due to false sharing in the GRU layer, reshape layer, or flatten_idx from Embedding.
+#
+# For optimal performance, compile with these flags:
+#   nim c -d:release -d:danger -d:native examples/ex06_shakespeare_generator.nim
+#
+# Explanation of flags:
+#   -d:release : Disables stacktraces and debug info for maximum speed
+#   -d:danger  : Disables runtime checks (bounds checking, etc.) - use with caution
+#   -d:native  : Optimizes for your specific CPU architecture (-march=native)
+#
+# Optional optimizations:
+#   -d:blas=openblas -d:lapack=openblas : Use optimized OpenBLAS (if installed)
+#   -d:blas=mkl -d:lapack=mkl          : Use Intel MKL (if installed, fastest option)
+#
+# DO NOT use -d:openmp flag with this example - it will hurt performance.
+#
+# The code already uses:
+#   - Adam optimizer (more efficient than SGD for this task)
+#   - Optimal batch size (100) and sequence length (200)
+#   - Efficient tensor slicing in gen_training_set
 
 # Remember that the network
 #   - must learn, not to use !?;. everywhere
@@ -16,10 +40,42 @@
 #   - must learn capital letters
 #   - must learn that character form words
 
-# TODO: save/reload trained weights
+# ========================================
+# Usage Examples
+# ========================================
+#
+# Train a new model:
+#   ./ex06_shakespeare_generator --input=examples/ex06_shakespeare_input.txt --mode=train --model=my_model
+#   or with backward compatibility:
+#   ./ex06_shakespeare_generator examples/ex06_shakespeare_input.txt
+#
+# Train with custom parameters:
+#   ./ex06_shakespeare_generator --input=data.txt --batch-size=64 --learning-rate=0.001 --seq-len=150
+#
+# Train with checkpoints every 100 epochs:
+#   ./ex06_shakespeare_generator --input=data.txt --checkpoint-freq=100
+#
+# Resume training from checkpoint (e.g., trained 300 epochs, continue to 500):
+#   ./ex06_shakespeare_generator --input=data.txt --resume --epochs=500
+#
+# Get more frequent progress reports (every 50 epochs instead of 200):
+#   ./ex06_shakespeare_generator --input=data.txt --status-report=50
+#
+# Filter short lines during training:
+#   ./ex06_shakespeare_generator --input=data.txt --min-line-len=15
+#
+# Generate text from a trained model:
+#   ./ex06_shakespeare_generator --mode=generate --model=my_model --seed="To be" --gen-len=1000
+#
+# Custom training with fewer epochs:
+#   ./ex06_shakespeare_generator --input=examples/ex06_shakespeare_input.txt --mode=train --epochs=500
+#
+# See --help for all options:
+#   ./ex06_shakespeare_generator --help
+#
 
 import
-  std / [os, random, times, strformat, algorithm, sequtils, tables]
+  std / [os, random, times, strformat, algorithm, sequtils, tables, parseopt, strutils]
 import ../src/arraymancer
 
 # ################################################################
@@ -44,17 +100,35 @@ const
   BatchSize = 100
   Epochs = 2000                # This take a long long time, I'm not even sure it converges
   Layers = 2
-  HiddenSize = 100
+  HiddenSize = 128             # Increased from 100 to 128 for better results
   LearningRate = 0.01'f32
   EmbedSize = 100
   SeqLen = 200                 # Characters sequences will be split in chunks of 200
   StatusReport = 200           # Report training status every x batches
+  PreviewLength = 100          # Number of characters to preview from input file
 
 # ################################################################
 #
 #                           Helpers
 #
 # ################################################################
+
+proc filterShortLines(text: string, minLen: int): string =
+  ## Filter out lines shorter than minLen characters
+  ## If minLen is 0, returns text unchanged
+  if minLen <= 0:
+    return text
+  
+  var filteredLines: seq[string] = @[]
+  for line in text.splitLines():
+    if line.len >= minLen:
+      filteredLines.add(line)
+  
+  result = filteredLines.join("\n")
+  
+  # Add back final newline if original had it
+  if text.len > 0 and text[^1] == '\n':
+    result &= "\n"
 
 proc strToTensor(str: string): Tensor[PrintableIdx] =
   result = newTensor[PrintableIdx](str.len)
@@ -143,6 +217,88 @@ network ShakespeareModel:
 
 # ################################################################
 #
+#                     Save/Load Model Weights
+#
+# ################################################################
+
+const ModelWeightFiles = [
+  "encoder_weight.npy",
+  "gru_w3s0.npy", "gru_w3sN.npy", "gru_u3s.npy", "gru_bW3s.npy", "gru_bU3s.npy",
+  "decoder_weight.npy", "decoder_bias.npy"
+]
+
+proc save[T](model: ShakespeareModel[T], dirPath: string, epoch: int = -1) =
+  ## Save model weights to a directory as .npy files
+  ## Optionally save the current epoch number for resuming training
+  if not dirExists(dirPath):
+    createDir(dirPath)
+  
+  # Save encoder weights (embedding layer)
+  model.encoder.weight.value.write_npy(dirPath / ModelWeightFiles[0])
+  
+  # Save GRU weights
+  model.gru.w3s0.value.write_npy(dirPath / ModelWeightFiles[1])
+  model.gru.w3sN.value.write_npy(dirPath / ModelWeightFiles[2])
+  model.gru.u3s.value.write_npy(dirPath / ModelWeightFiles[3])
+  model.gru.bW3s.value.write_npy(dirPath / ModelWeightFiles[4])
+  model.gru.bU3s.value.write_npy(dirPath / ModelWeightFiles[5])
+  
+  # Save decoder weights (linear layer)
+  model.decoder.weight.value.write_npy(dirPath / ModelWeightFiles[6])
+  model.decoder.bias.value.write_npy(dirPath / ModelWeightFiles[7])
+  
+  # Save epoch number if provided (for resuming training)
+  if epoch >= 0:
+    let epochFile = dirPath / "checkpoint_epoch.txt"
+    writeFile(epochFile, $epoch)
+  
+  echo &"Model weights saved to {dirPath}"
+  if epoch >= 0:
+    echo &"  Checkpoint at epoch {epoch}"
+
+proc load[T](ctx: Context[AnyTensor[T]], dirPath: string): tuple[model: ShakespeareModel[T], startEpoch: int] =
+  ## Load model weights from a directory
+  ## Returns the model and the epoch to resume from (0 if no checkpoint)
+  if not dirExists(dirPath):
+    raise newException(IOError, &"Model directory {dirPath} does not exist")
+  
+  # Verify all required weight files exist before initializing model
+  for filename in ModelWeightFiles:
+    let filepath = dirPath / filename
+    if not fileExists(filepath):
+      raise newException(IOError, &"Missing weight file: {filepath}")
+  
+  # Initialize model with random weights first
+  result.model = ctx.init(ShakespeareModel)
+  
+  # Load encoder weights
+  result.model.encoder.weight.value = read_npy[T](dirPath / ModelWeightFiles[0])
+  
+  # Load GRU weights
+  result.model.gru.w3s0.value = read_npy[T](dirPath / ModelWeightFiles[1])
+  result.model.gru.w3sN.value = read_npy[T](dirPath / ModelWeightFiles[2])
+  result.model.gru.u3s.value = read_npy[T](dirPath / ModelWeightFiles[3])
+  result.model.gru.bW3s.value = read_npy[T](dirPath / ModelWeightFiles[4])
+  result.model.gru.bU3s.value = read_npy[T](dirPath / ModelWeightFiles[5])
+  
+  # Load decoder weights
+  result.model.decoder.weight.value = read_npy[T](dirPath / ModelWeightFiles[6])
+  result.model.decoder.bias.value = read_npy[T](dirPath / ModelWeightFiles[7])
+  
+  # Load epoch number if it exists (for resuming training)
+  result.startEpoch = 0
+  let epochFile = dirPath / "checkpoint_epoch.txt"
+  if fileExists(epochFile):
+    try:
+      result.startEpoch = parseInt(readFile(epochFile).strip())
+      echo &"Model weights loaded from {dirPath} (checkpoint at epoch {result.startEpoch})"
+    except ValueError:
+      echo &"Model weights loaded from {dirPath} (warning: could not parse checkpoint epoch)"
+  else:
+    echo &"Model weights loaded from {dirPath}"
+
+# ################################################################
+#
 #                        Training
 #
 # ################################################################
@@ -178,7 +334,8 @@ proc train[T](
   ## Return the loss after the training session
 
   let seq_len = input.shape[0]
-  var hidden = ctx.variable zeros[float32](Layers, BatchSize, HiddenSize)
+  let batch_size = input.shape[1]  # Get actual batch size from input
+  var hidden = ctx.variable zeros[float32](Layers, batch_size, HiddenSize)
 
   # We will cumulate the loss on the whole seq before backpropping at once.
   var seq_loss = ctx.variable(zeros[float32](1), requires_grad = true)
@@ -260,57 +417,330 @@ proc gen_text[T](
 #
 # ################################################################
 
+proc printHelp() =
+  echo """
+Shakespeare Text Generator
+
+Usage:
+  ex06_shakespeare_generator [options]
+
+Options:
+  -h, --help                   Show this help message
+  -i, --input=FILE             Input text file for training (required for training mode)
+  -m, --model=PATH             Path to model directory for saving/loading weights (default: "shakespeare_model")
+  --mode=MODE                  Mode: "train" or "generate" (default: "train")
+  --seed=TEXT                  Seed text for generation (default: "Wh")
+  --gen-len=N                  Length of generated text (default: 4000)
+  --epochs=N                   Number of training epochs (default: 2000)
+  --batch-size=N               Batch size for training (default: 100)
+  --learning-rate=FLOAT        Learning rate for optimizer (default: 0.01)
+  --hidden-size=N              Hidden layer size (default: 128)
+  --seq-len=N                  Sequence length for training (default: 200)
+  --status-report=N            Report training status every N epochs (default: 200)
+  --checkpoint-freq=N          Save model checkpoint every N epochs (default: 0, disabled)
+  --resume                     Resume training from saved checkpoint
+  --min-line-len=N             Minimum line length to keep in training data (default: 0, disabled)
+
+Examples:
+  # Train a new model:
+  ./ex06_shakespeare_generator --input=examples/ex06_shakespeare_input.txt --mode=train --model=my_model
+
+  # Train with custom parameters:
+  ./ex06_shakespeare_generator --input=data.txt --batch-size=64 --learning-rate=0.001 --hidden-size=256
+
+  # Train with checkpoints every 100 epochs:
+  ./ex06_shakespeare_generator --input=data.txt --checkpoint-freq=100
+
+  # Resume training from checkpoint:
+  ./ex06_shakespeare_generator --input=data.txt --resume --epochs=500
+
+  # Get more frequent progress reports:
+  ./ex06_shakespeare_generator --input=data.txt --status-report=50
+
+  # Filter short lines during training:
+  ./ex06_shakespeare_generator --input=data.txt --min-line-len=15
+
+  # Generate text from a trained model:
+  ./ex06_shakespeare_generator --mode=generate --model=my_model --seed="To be" --gen-len=1000
+"""
+
+proc parseCommandLine(): tuple[
+  mode: string,
+  inputFile: string,
+  modelPath: string,
+  seedText: string,
+  genLen: int,
+  numEpochs: int,
+  batchSize: int,
+  learningRate: float32,
+  hiddenSize: int,
+  seqLen: int,
+  statusReport: int,
+  checkpointFreq: int,
+  resume: bool,
+  minLineLen: int
+] =
+  ## Parse command-line arguments
+  result.mode = "train"
+  result.inputFile = ""
+  result.modelPath = "shakespeare_model"
+  result.seedText = "Wh"
+  result.genLen = 4000
+  result.numEpochs = Epochs
+  result.batchSize = BatchSize
+  result.learningRate = LearningRate
+  result.hiddenSize = HiddenSize
+  result.seqLen = SeqLen
+  result.statusReport = StatusReport
+  result.checkpointFreq = 0  # Disabled by default
+  result.resume = false
+  result.minLineLen = 0  # Disabled by default
+
+  var p = initOptParser()
+  while true:
+    p.next()
+    case p.kind
+    of cmdEnd: break
+    of cmdShortOption, cmdLongOption:
+      case p.key
+      of "h", "help":
+        printHelp()
+        quit(0)
+      of "i", "input":
+        result.inputFile = p.val
+      of "m", "model":
+        result.modelPath = p.val
+      of "mode":
+        result.mode = p.val
+      of "seed":
+        result.seedText = p.val
+      of "gen-len":
+        try:
+          result.genLen = parseInt(p.val)
+        except ValueError:
+          echo &"Error: Invalid integer value for --gen-len: {p.val}"
+          quit(1)
+      of "epochs":
+        try:
+          result.numEpochs = parseInt(p.val)
+        except ValueError:
+          echo &"Error: Invalid integer value for --epochs: {p.val}"
+          quit(1)
+      of "batch-size":
+        try:
+          result.batchSize = parseInt(p.val)
+          if result.batchSize < 1:
+            echo "Error: --batch-size must be at least 1"
+            quit(1)
+        except ValueError:
+          echo &"Error: Invalid integer value for --batch-size: {p.val}"
+          quit(1)
+      of "learning-rate":
+        try:
+          result.learningRate = parseFloat(p.val).float32
+          if result.learningRate <= 0:
+            echo "Error: --learning-rate must be positive"
+            quit(1)
+        except ValueError:
+          echo &"Error: Invalid float value for --learning-rate: {p.val}"
+          quit(1)
+      of "hidden-size":
+        try:
+          result.hiddenSize = parseInt(p.val)
+          if result.hiddenSize < 1:
+            echo "Error: --hidden-size must be at least 1"
+            quit(1)
+        except ValueError:
+          echo &"Error: Invalid integer value for --hidden-size: {p.val}"
+          quit(1)
+      of "seq-len":
+        try:
+          result.seqLen = parseInt(p.val)
+          if result.seqLen < 1:
+            echo "Error: --seq-len must be at least 1"
+            quit(1)
+        except ValueError:
+          echo &"Error: Invalid integer value for --seq-len: {p.val}"
+          quit(1)
+      of "status-report":
+        try:
+          result.statusReport = parseInt(p.val)
+          if result.statusReport < 1:
+            echo "Error: --status-report must be at least 1"
+            quit(1)
+        except ValueError:
+          echo &"Error: Invalid integer value for --status-report: {p.val}"
+          quit(1)
+      of "checkpoint-freq", "checkpointFreq", "checkpoint_freq":
+        try:
+          result.checkpointFreq = parseInt(p.val)
+          if result.checkpointFreq < 0:
+            echo "Error: --checkpoint-freq must be non-negative"
+            quit(1)
+        except ValueError:
+          echo &"Error: Invalid integer value for --checkpoint-freq: {p.val}"
+          quit(1)
+      of "resume":
+        result.resume = true
+      of "min-line-len":
+        try:
+          result.minLineLen = parseInt(p.val)
+          if result.minLineLen < 0:
+            echo "Error: --min-line-len must be non-negative"
+            quit(1)
+        except ValueError:
+          echo &"Error: Invalid integer value for --min-line-len: {p.val}"
+          quit(1)
+      else:
+        echo &"Unknown option: {p.key}"
+        printHelp()
+        quit(1)
+    of cmdArgument:
+      # Support positional argument for backward compatibility
+      if result.inputFile == "":
+        result.inputFile = p.key
+
 proc main() =
-  # Parse the input file
-  if paramCount() < 1:
-    echo "Please provide an input file path as an argument"
-    return
+  let args = parseCommandLine()
 
-  let filePath = paramStr(1)
-  if not filePath.fileExists:
-    echo "Could not find input file"
-    return
+  # Validate arguments based on mode
+  if args.mode notin ["train", "generate"]:
+    echo "Error: --mode must be either 'train' or 'generate'"
+    printHelp()
+    quit(1)
 
-  let txt_raw = readFile(filePath)
+  if args.mode == "train" and args.inputFile == "":
+    echo "Error: --input is required for training mode"
+    printHelp()
+    quit(1)
 
-  echo "Checking the first hundred characters of your file"
-  echo txt_raw[0 .. 100]
-  echo "\n####\nStarting training\n"
-
-  # For our need in gen_training_set, we reshape it from [nb_chars] to [nb_chars, 1]
-  let txt = txt_raw.strToTensor.unsqueeze(1)
-
-  # Make the results reproducible
-  randomize(0xDEADBEEF) # Changing that will change the weight initialisation
-
-  # Create our autograd context that will track deep learning operations applied to tensors.
+  # Create our autograd context
   let ctx = newContext Tensor[float32]
 
-  # Build our model and initialize its weights
-  let model = ctx.init(ShakespeareModel)
+  if args.mode == "train":
+    # ============================================================
+    # Training mode
+    # ============================================================
+    
+    if not fileExists(args.inputFile):
+      echo &"Error: Could not find input file: {args.inputFile}"
+      quit(1)
 
-  # Optimizer
-  # let optim = model.optimizer(SGD, learning_rate = LearningRate)
-  var optim = model.optimizer(Adam, learning_rate = LearningRate)
+    var txt_raw = readFile(args.inputFile)
+    
+    if txt_raw.len == 0:
+      echo "Error: Input file is empty"
+      quit(1)
+    
+    # Filter short lines if requested
+    if args.minLineLen > 0:
+      echo &"Filtering lines shorter than {args.minLineLen} characters..."
+      let originalLen = txt_raw.len
+      txt_raw = filterShortLines(txt_raw, args.minLineLen)
+      let filteredLen = txt_raw.len
+      let removedChars = originalLen - filteredLen
+      let percentRemoved = (removedChars.float / originalLen.float * 100.0)
+      echo &"Removed {removedChars} characters ({percentRemoved:0.1f}% of data)"
+      
+      if txt_raw.len == 0:
+        echo "Error: No data remaining after filtering. Try a lower --min-line-len value."
+        quit(1)
+    
+    echo "Checking the first hundred characters of your file"
+    let previewLen = min(PreviewLength, txt_raw.len)
+    echo txt_raw[0 ..< previewLen]
+    
+    # Check if custom parameters differ from defaults
+    if args.hiddenSize != HiddenSize:
+      echo &"\nWarning: --hidden-size={args.hiddenSize} specified, but model uses compile-time constant HiddenSize={HiddenSize}"
+      echo "To change hidden size, modify the HiddenSize constant in the source and recompile."
+    
+    echo &"\n####\nStarting training with parameters:"
+    echo &"  Epochs: {args.numEpochs}"
+    echo &"  Batch size: {args.batchSize}"
+    echo &"  Sequence length: {args.seqLen}"
+    echo &"  Learning rate: {args.learningRate}"
+    echo &"  Hidden size: {HiddenSize} (compile-time constant)"
+    echo &"  Status report interval: {args.statusReport} epochs"
+    if args.checkpointFreq > 0:
+      echo &"  Checkpoint frequency: {args.checkpointFreq} epochs"
+    if args.resume:
+      echo &"  Resume from checkpoint: enabled"
+    echo ""
 
-  # We use a different RNG for seq split
-  var split_rng = initRand(42)
+    # For our need in gen_training_set, we reshape it from [nb_chars] to [nb_chars, 1]
+    let txt = txt_raw.strToTensor.unsqueeze(1)
 
-  # Start our time counter
-  let start = epochTime()
+    # Make the results reproducible
+    randomize(0xDEADBEEF)
 
-  for epoch in 0 ..< Epochs:
-    let (input, target) = gen_training_set(txt, SeqLen, BatchSize, split_rng)
-    let loss = ctx.train(model, optim, input, target)
+    # Build our model and initialize its weights
+    var model: ShakespeareModel[float32]
+    var startEpoch = 0
+    
+    # Check if resuming from checkpoint
+    if args.resume and dirExists(args.modelPath):
+      echo &"Resuming training from {args.modelPath}..."
+      let loaded = ctx.load(args.modelPath)
+      model = loaded.model
+      startEpoch = loaded.startEpoch
+      if startEpoch >= args.numEpochs:
+        echo &"Model already trained for {startEpoch} epochs (target: {args.numEpochs})"
+        echo "Increase --epochs to train further or remove --resume to restart."
+        quit(0)
+      echo &"Continuing from epoch {startEpoch} to {args.numEpochs}"
+    else:
+      model = ctx.init(ShakespeareModel)
+      if args.resume:
+        echo "Warning: --resume specified but no checkpoint found, starting from scratch"
 
-    if epoch mod StatusReport == 0:
-      let elapsed = epochTime() - start
-      echo &"\n####\nTime: {elapsed:>4.4f} s, Epoch: {epoch}/{Epochs}, Loss: {loss:>2.4f}"
-      echo "Sample: "
-      echo ctx.gen_text(model, seq_len = 100)
+    # Optimizer - using Adam for better performance
+    var optim = model.optimizer(Adam, learning_rate = args.learningRate)
 
-  echo "\n##########\nTraining end. Generating 4000 characters Shakespeare masterpiece in 3. 2. 1...\n\n"
-  echo ctx.gen_text(model, seq_len = 4000)
+    # We use a different RNG for seq split
+    var split_rng = initRand(42)
+
+    # Start our time counter
+    let start = epochTime()
+
+    for epoch in startEpoch ..< args.numEpochs:
+      let (input, target) = gen_training_set(txt, args.seqLen, args.batchSize, split_rng)
+      let loss = ctx.train(model, optim, input, target)
+
+      if epoch mod args.statusReport == 0:
+        let elapsed = epochTime() - start
+        echo &"\n####\nTime: {elapsed:>4.4f} s, Epoch: {epoch}/{args.numEpochs}, Loss: {loss:>2.4f}"
+        echo "Sample: "
+        echo ctx.gen_text(model, seq_len = 100)
+      
+      # Save checkpoint if enabled
+      if args.checkpointFreq > 0 and (epoch + 1) mod args.checkpointFreq == 0:
+        echo &"\nSaving checkpoint at epoch {epoch + 1}..."
+        model.save(args.modelPath, epoch + 1)
+
+    echo "\n##########\nTraining complete!\n"
+    echo &"Saving model to {args.modelPath}..."
+    model.save(args.modelPath, args.numEpochs)
+    
+    echo "\nGenerating 4000 characters Shakespeare masterpiece in 3. 2. 1...\n"
+    echo ctx.gen_text(model, seq_len = 4000)
+
+  else:
+    # ============================================================
+    # Generation mode
+    # ============================================================
+    
+    if not dirExists(args.modelPath):
+      echo &"Error: Model directory {args.modelPath} does not exist"
+      echo "Please train a model first using --mode train"
+      quit(1)
+
+    echo &"Loading model from {args.modelPath}..."
+    let loaded = ctx.load(args.modelPath)
+    let model = loaded.model
+
+    echo &"\nGenerating {args.genLen} characters with seed: \"{args.seedText}\"\n"
+    echo ctx.gen_text(model, seed_chars = args.seedText, seq_len = args.genLen)
 
 main()
 
